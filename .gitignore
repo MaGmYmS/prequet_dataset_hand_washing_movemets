@@ -1,0 +1,12 @@
+/venv3.12
+/landmarks_parquet
+/landmarks_parquet_test
+/Video_with_annotations
+/all_landmarks.parquet
+/landmarks_clean.parquet
+/landmarks_clean_and_balanced.parquet
+/landmarks_clean_preview.csv
+/test.parquet
+/v1 задание.txt
+/v2 задание.txt
+/test_import.py
