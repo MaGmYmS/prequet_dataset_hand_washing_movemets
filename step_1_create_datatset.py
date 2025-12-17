@@ -61,7 +61,6 @@ def load_dataset(root_dir):
 current_dir_code = os.getcwd()
 current_dir_project = os.path.dirname(current_dir_code) # Спускаемся на уровень вниз
 dataset_folder_path = os.path.join(current_dir_project, "DataSet")
-# dataset_folder_path = os.path.join(current_dir_project, "DatasSet")
 print("Загрузка датасета из:", dataset_folder_path)
 df = load_dataset(dataset_folder_path)
 
@@ -177,11 +176,10 @@ def extract_hands_arrays(
     """
     Возвращает словарь:
         {
-            "left":  np.ndarray(21,3) | None,
-            "right": np.ndarray(21,3) | None
+            "left":  np.ndarray(21,3) | None,  # Массив координат для левой руки
+            "right": np.ndarray(21,3) | None   # Массив координат для правой руки
         }
     """
-
     hands = {"left": None, "right": None}
 
     if not mp_result.multi_hand_landmarks:
@@ -192,12 +190,12 @@ def extract_hands_arrays(
     for i, hand_lm in enumerate(mp_result.multi_hand_landmarks):
         arr = _landmarks_to_array(hand_lm, frame_w, frame_h)
 
-        # определяем сторону
+        # определяем сторону руки
         side = None
         if i < len(handedness):
             side = handedness[i].classification[0].label.lower()
 
-        # fallback по X
+        # резервный вариант для определения стороны по координатам X
         if side is None:
             side = "left" if np.nanmean(arr[:, 0]) < frame_w / 2 else "right"
 
@@ -214,7 +212,7 @@ def build_hand_features(
 
     rec = {}
 
-    # если руки нет — NaN
+    # если координаты отсутствуют, заполняем NaN
     if arr is None:
         for i in range(21):
             rec[f"{hand_label}_x_{i}"] = np.nan
@@ -225,7 +223,7 @@ def build_hand_features(
         rec[f"{hand_label}_scale"] = np.nan
         return rec
 
-    # сырые координаты
+    # сохраняем исходные координаты рук
     for i in range(21):
         rec[f"{hand_label}_x_{i}"] = float(arr[i, 0])
         rec[f"{hand_label}_y_{i}"] = float(arr[i, 1])
@@ -238,20 +236,20 @@ def build_hand_features(
     rec[f"{hand_label}_cy"] = float(cy)
     rec[f"{hand_label}_scale"] = float(scale)
 
-    # нормализация
+    # нормализация координат
     if normalize:
         for i in range(21):
             rec[f"{hand_label}_nx_{i}"] = float((arr[i, 0] - cx) / scale)
             rec[f"{hand_label}_ny_{i}"] = float((arr[i, 1] - cy) / scale)
 
-    # расстояния wrist → fingertips
+    # расстояние от запястья до кончиков пальцев(wrist → fingertips)
     wrist = arr[0, :2]
     for j, idx in enumerate([4, 8, 12, 16, 20]):
         rec[f"{hand_label}_tip{j}_wrist_dist"] = float(
             np.linalg.norm(arr[idx, :2] - wrist)
         )
 
-    # углы суставов
+    # углы суставов каждого пальца
     finger_joints = {
         "index": (5, 6, 7),
         "middle": (9, 10, 11),
@@ -277,7 +275,7 @@ def extract_landmarks_table(
     compute_derivatives: bool = True
 ) -> pd.DataFrame:
     """Строит табличный датасет по видео и аннотациям."""
-
+    # Определение общих свойств видео
     cap = cv2.VideoCapture(video_path)
     fps = cap.get(cv2.CAP_PROP_FPS) or 30.0
     frame_w = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
@@ -289,7 +287,7 @@ def extract_landmarks_table(
 
     hands_proc = create_hands_processor()
     rows = []
-
+    # Записываем массивы меток рук по текущему кадру
     for frame_idx in range(total_frames):
         ret, frame = cap.read()
         if not ret:
@@ -324,7 +322,7 @@ def extract_landmarks_table(
 
     df_out = pd.DataFrame(rows)
 
-    # скорости
+    # вычисление скоростей между кадрами по x и y
     if compute_derivatives and normalize:
         dt = 1.0 / fps
         for h in ("L", "R"):
@@ -338,7 +336,7 @@ def extract_landmarks_table(
 output_root = os.path.join(current_dir_code, "landmarks_parquet_test")   # куда сохранять результаты
 os.makedirs(output_root, exist_ok=True)
 
-# Число процессов (None -> автоматически cpu_count()-1)
+# Количество процессов для параллельных вычислений(None -> автоматически cpu_count()-1)
 import multiprocessing
 DEFAULT_WORKERS = max(1, multiprocessing.cpu_count() - 1)
 
@@ -361,7 +359,7 @@ def _mp_worker(task):
         dataset_folder_path = task["dataset_folder_path"]
         output_root = task["output_root"]
 
-        # пути
+        # Формируем пути к аннотациям и видео
         ds_path = os.path.join(dataset_folder_path, dataset)
         ann_path = os.path.join(ds_path, "Annotations", annotator, video_csv_name)
         video_base = os.path.splitext(video_csv_name)[0]
@@ -379,14 +377,13 @@ def _mp_worker(task):
         out_fname = f"{video_base}_landmarks.parquet"
         out_path = os.path.join(out_dir, out_fname)
 
-        # Если уже есть — пропускаем (resume)
         if os.path.exists(out_path):
             return {"status": "skipped", "message": "Уже обработан", "out_path": out_path, "task": task}
 
-        # читаем аннотацию
+        # Чтение аннотации из CSV файла
         ann_df = pd.read_csv(ann_path)
 
-        # Запуск извлечения
+        # Запуск извлечения меток рук
         df_out = extract_landmarks_table(
             video_path=video_path,
             ann_df=ann_df,
@@ -396,7 +393,7 @@ def _mp_worker(task):
             compute_derivatives=True
         )
 
-        # Сохранение
+        # Сохранение результатов в формате parquet
         df_out.to_parquet(out_path)
         print({"status": "ok", "message": "Saved", "out_path": out_path, "task": task})
         return {"status": "ok", "message": "Saved", "out_path": out_path, "task": task}
@@ -421,7 +418,6 @@ def process_all_annotations(df, dataset_folder_path, output_root, n_workers=None
         dataset = str(row["dataset"])
         annotator = str(row["annotator"])
         video_csv_name = str(row["video"])
-        # игнорируем строки без необходимых полей
         if not video_csv_name:
             continue
         tasks.append({
@@ -432,7 +428,7 @@ def process_all_annotations(df, dataset_folder_path, output_root, n_workers=None
             "output_root": output_root
         })
 
-    # Уникализируем
+    # Уникализируем задачи
     unique_tasks = []
     seen = set()
     for t in tqdm(tasks, desc="Create key unique tasks"):
@@ -444,28 +440,33 @@ def process_all_annotations(df, dataset_folder_path, output_root, n_workers=None
 
     results = []
 
+# TODO Это нужно?
     # for task in tqdm(unique_tasks, desc="Processing sequential"):
     #     res = _mp_worker(task)
     #     results.append(res)
 
-    # Параллельное выполнение
+    # Параллельное выполнение задач
     with ProcessPoolExecutor(max_workers=n_workers) as ex:
         futures = {ex.submit(_mp_worker, task): task for task in unique_tasks}
         for fut in tqdm(as_completed(futures), total=len(futures), desc="Processing"):
             res = fut.result()
             results.append(res)
 
-    # Сводка
     return pd.DataFrame(results)
 
 
 
 if __name__ == "__main__":
-    # вызвать процессинг
+    # Запуск функции обработки аннотаций
     summary_df = process_all_annotations(df, dataset_folder_path, output_root)
+    
+    # Вывод результатов: распределение статусов
     print(summary_df.status.value_counts())
 
+    # Вывод первых 20 сообщений об ошибках
     print(summary_df[summary_df.status == "error"][["message", "task"]].head(20))
     print("\n\n\n")
+    
+    # Вывод статистики сообщений
     print(summary_df.message.value_counts().head(20))
 
